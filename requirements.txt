@@ -1,5 +1,5 @@
 playwright==1.53.0
-PyQt5==5.15.11
+PyQt5==5.15.9
 PyQt5_sip==12.17.0
 Requests==2.32.4
 xmltodict==0.14.2
