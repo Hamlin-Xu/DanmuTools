@@ -19,7 +19,7 @@
 
 ## 安装依赖
 
-建议使用 Python 3.7 及以上版本，并推荐虚拟环境：
+建议使用 Python 3.9 及以上版本，并推荐虚拟环境：
 
 ```bash
 pip install -r requirements.txt
