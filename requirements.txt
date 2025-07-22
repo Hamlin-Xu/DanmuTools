@@ -3,4 +3,4 @@ PyQt5==5.15.9
 PyQt5_sip==12.17.0
 Requests==2.32.4
 xmltodict==0.14.2
-
+selenium==4.34.2
