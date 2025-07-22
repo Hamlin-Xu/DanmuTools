@@ -32,7 +32,8 @@ pip install -r requirements.txt
 ```bash
 python main.py
 ```
-![alt text](image.png)
+<img width="666" height="339" alt="image" src="https://github.com/user-attachments/assets/b87738fc-7892-41db-a4e8-105aca990312" />
+
 
 ### 操作流程
 
