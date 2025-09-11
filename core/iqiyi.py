@@ -127,6 +127,27 @@ class IqiyiFetcher(BaseFetcher):
             return danmakus
         except Exception:
             return []
+        
+    def get_video_info(self):
+        """
+        获取视频信息，返回字典，至少包含 'title' 键
+        """
+        try:
+            tvid = self.extract_video_id()
+            if not tvid:
+                return {"title": "弹幕"}
+            
+            info_url = f"https://mesh.if.iqiyi.com/player/lw/video/playervideoinfo?id={tvid}&locale=cn_s"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            resp = requests.get(info_url, headers=headers, timeout=8)
+            resp.raise_for_status()
+            data = resp.json().get("data", {})
+
+            # 视频标题优先使用 vn（集标题），没有则用 an（剧名）
+            title = data.get("vn") or data.get("an") or "弹幕"
+            return {"title": title}
+        except Exception:
+            return {"title": "弹幕"}
 
     def run(self):
         """执行抓取任务"""

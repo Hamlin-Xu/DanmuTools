@@ -1,89 +1,111 @@
 import re
-import time
 import requests
 import xml.etree.ElementTree as ET
 from .base import BaseFetcher
 
+
 class BilibiliFetcher(BaseFetcher):
-    """哔哩哔哩弹幕抓取器"""
-    
+    """哔哩哔哩弹幕抓取器（支持番剧和普通视频，自动获取文件名）"""
+
     def extract_video_id(self):
-        """从URL中提取视频ID（BVID或AVID）"""
-        # 处理短链接
+        """从URL中提取视频ID（BV号或AV号）"""
+        # 短链接
         if self.url.startswith("https://b23.tv/"):
             try:
-                response = requests.head(self.url, allow_redirects=False, timeout=3)
-                if 300 <= response.status_code < 400:
-                    location = response.headers.get('Location', '')
-                    bvid_match = re.search(r'/video/(BV[0-9A-Za-z]{10})', location)
-                    if bvid_match:
-                        return bvid_match.group(1)
+                resp = requests.head(self.url, allow_redirects=False, timeout=3)
+                if 300 <= resp.status_code < 400:
+                    location = resp.headers.get('Location', '')
+                    match = re.search(r'/video/(BV[0-9A-Za-z]{10})', location)
+                    if match:
+                        return match.group(1)
             except:
                 pass
-        
-        # 尝试匹配BV号
-        bv_match = re.search(r'(BV[0-9A-Za-z]{10})', self.url)
-        if bv_match:
-            return bv_match.group(0)
-        
-        # 尝试匹配AV号
-        av_match = re.search(r'(av\d+)', self.url, re.IGNORECASE)
-        if av_match:
-            return av_match.group(0).lower()
-        
+        # BV号
+        match = re.search(r'(BV[0-9A-Za-z]{10})', self.url)
+        if match:
+            return match.group(0)
+        # AV号
+        match = re.search(r'(av\d+)', self.url, re.IGNORECASE)
+        if match:
+            return match.group(0).lower()
         return None
 
-    def _get_cid(self):
-        """获取视频的CID"""
-        if not self.id:
-            raise ValueError("无效的视频ID")
-        
+    def _get_video_data(self):
+        """获取视频数据并缓存，返回字典，包含 'cid' 和 'title'"""
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "User-Agent": "Mozilla/5.0",
             "Referer": "https://www.bilibili.com/"
         }
-        
-        if self.id.startswith('BV'):
+
+        # 番剧页面直接解析 HTML
+        if "bangumi/play" in self.url:
+            resp = requests.get(self.url, headers=headers, timeout=8)
+            resp.raise_for_status()
+            html = resp.text
+
+            # 提取 cid
+            cid_match = re.search(r'"cid":(\d+),', html)
+            cid = cid_match.group(1) if cid_match else None
+
+            # 提取标题
+            title_match = re.search(r'<meta itemProp="name" content="([^"]+)"', html)
+            title = title_match.group(1) if title_match else "弹幕"
+
+            self.video_data = {"cid": cid, "title": title}
+            return self.video_data
+
+        # 普通视频走 API
+        if self.id and self.id.startswith('BV'):
             api_url = f'https://api.bilibili.com/x/web-interface/view?bvid={self.id}'
-        elif self.id.startswith('av'):
-            aid = self.id[2:]
-            api_url = f'https://api.bilibili.com/x/web-interface/view?aid={aid}'
+        elif self.id and self.id.startswith('av'):
+            api_url = f'https://api.bilibili.com/x/web-interface/view?aid={self.id[2:]}'
         else:
-            api_url = f'https://api.bilibili.com/x/web-interface/view?bvid={self.id}'
-        
+            api_url = f'https://api.bilibili.com/x/web-interface/view?bvid={self.id if self.id else ""}'
+
         resp = requests.get(api_url, headers=headers, timeout=8)
         resp.raise_for_status()
         data = resp.json()
-        
         if data.get('code') != 0:
-            error_msg = data.get('message', '未知错误')
-            raise ValueError(f"B站API错误: {error_msg}")
-        
-        return data['data']['cid']
+            raise ValueError(f"B站API错误: {data.get('message','未知错误')}")
+
+        self.video_data = data['data']
+        return self.video_data
+
+    def get_video_info(self):
+        """返回视频信息字典，用于自动生成文件名"""
+        if hasattr(self, "video_data") and self.video_data:
+            # 去除常见后缀
+            if self.video_data["title"]:
+                for pat in [r'[_-]?哔哩哔哩', r'[_-]?高清独家在线观看',
+                            r'[_-]?高清独家在线播放', r'[_-]?番剧', r'[_-]?bilibili']:
+                    self.video_data["title"] = re.sub(pat, '', self.video_data["title"])
+                self.video_data["title"] = self.video_data["title"].strip()
+            return {"title": self.video_data.get("title") or "弹幕"}
+        return {"title": "弹幕"}
 
     def run(self):
-        """执行抓取任务"""
+        """抓取弹幕"""
         self.id = self.extract_video_id()
-        if not self.id:
-            self.error.emit("无法提取B站视频ID")
-            return
-            
         try:
-            cid = self._get_cid()
+            video_data = self._get_video_data()
+            cid = video_data.get("cid")
+            if not cid:
+                raise ValueError("未获取到cid")
+
             danmu_url = f'https://comment.bilibili.com/{cid}.xml'
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                "Referer": f"https://www.bilibili.com/video/{self.id}"
+                "User-Agent": "Mozilla/5.0",
+                "Referer": f"https://www.bilibili.com/video/{self.id}" if self.id else self.url
             }
             resp = requests.get(danmu_url, headers=headers, timeout=8)
             resp.raise_for_status()
-            
-            # 解析XML
+
+            # 解析 XML 弹幕
             root = ET.fromstring(resp.content)
             danmu = []
             for d in root.findall('d'):
                 p_attr = d.get('p')
-                if p_attr is None:
+                if not p_attr:
                     continue
                 p = p_attr.split(',')
                 danmu.append({
@@ -94,7 +116,7 @@ class BilibiliFetcher(BaseFetcher):
                     'timestamp': int(p[4]),
                     'content': d.text or ''
                 })
-            
+
             self.progress.emit(100)
             self.finished.emit(danmu, True)
         except Exception as e:

@@ -1,6 +1,8 @@
 import os
 import sys
 import re
+import json
+import requests
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit, QComboBox, QPushButton,
     QFileDialog, QMessageBox, QProgressBar, QHBoxLayout, QGridLayout
@@ -48,9 +50,9 @@ class DanmuApp(QWidget):
         self.platform_combo = QComboBox()
         self.platform_combo.addItems(['自动检测', '爱奇艺', '腾讯视频', '哔哩哔哩', '优酷'])
 
-        self.file_label = QLabel('保存文件名：')
+        self.file_label = QLabel('保存路径：')
         self.file_input = QLineEdit()
-        self.file_input.setPlaceholderText('输出XML文件')
+        self.file_input.setPlaceholderText('选择保存弹幕的文件夹')
         self.browse_btn = QPushButton('浏览...')
 
         self.start_btn = QPushButton('开始抓取')
@@ -61,7 +63,7 @@ class DanmuApp(QWidget):
         self.progress_bar.setRange(0, 100)
 
         self.status_label = QLabel('就绪')
-        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         layout = QGridLayout()
         layout.setSpacing(12)
@@ -92,16 +94,14 @@ class DanmuApp(QWidget):
         self.stop_btn.clicked.connect(self.stop_fetch)
 
     def browse_file(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self, 
-            '保存弹幕', 
-            '', 
-            'XML文件 (*.xml)'
+        path = QFileDialog.getExistingDirectory(
+            self,
+            '选择保存路径',
+            os.getcwd()
         )
         if path:
-            if not path.endswith('.xml'):
-                path += '.xml'
             self.file_input.setText(path)
+
 
     def start_fetch(self):
         url = self.url_input.text().strip()
@@ -110,9 +110,6 @@ class DanmuApp(QWidget):
 
         if not url:
             QMessageBox.warning(self, '输入错误', '请输入视频链接')
-            return
-        if not out:
-            QMessageBox.warning(self, '输入错误', '请指定保存文件名')
             return
 
         try:
@@ -128,8 +125,9 @@ class DanmuApp(QWidget):
             else:
                 raise ValueError('不支持的平台')
 
+            # 连接信号，传入 url 和 platform 给 on_finish，方便自动命名
             self.fetcher.progress.connect(self.update_progress)
-            self.fetcher.finished.connect(lambda data, ok: self.on_finish(data, ok, out))
+            self.fetcher.finished.connect(lambda data, ok: self.on_finish(data, ok, out, url, platform))
             self.fetcher.error.connect(self.show_error)
 
             self.start_btn.setEnabled(False)
@@ -175,21 +173,36 @@ class DanmuApp(QWidget):
         self.progress_bar.setValue(p)
         self.status_label.setText(f'下载中: {p}%')
 
-    def on_finish(self, data, completed, out):
+    def on_finish(self, data, completed, out, url, platform):
         try:
             if not data:
                 self.status_label.setText('未获取到弹幕数据')
                 QMessageBox.warning(self, '警告', '未获取到任何弹幕数据')
                 return
 
-            save_as_bilibili_xml(data, out)
+            # 获取保存路径
+            folder = out or os.getcwd()  # 用户没选路径默认当前文件夹
+
+            # 文件名通过 Fetcher 返回的视频信息自动生成
+            title = None
+            try:
+                info = self.fetcher.get_video_info() if self.fetcher is not None else None
+                title = info.get('title') if info else None
+            except Exception:
+                pass
+            if not title:
+                title = '弹幕'
+            filename = os.path.join(folder, f"{title}.xml")
+
+            # 保存弹幕
+            save_as_bilibili_xml(data, filename)
 
             if completed:
                 self.status_label.setText(f'完成: 已保存 {len(data)} 条弹幕')
-                QMessageBox.information(self, '完成', f'成功抓取 {len(data)} 条弹幕\n已保存为: {out}')
+                QMessageBox.information(self, '完成', f'成功抓取 {len(data)} 条弹幕\n已保存为: {filename}')
             else:
                 self.status_label.setText(f'已停止: 保存 {len(data)} 条弹幕')
-                QMessageBox.information(self, '已停止', f'已停止下载\n保存了 {len(data)} 条弹幕到: {out}')
+                QMessageBox.information(self, '已停止', f'已停止下载\n保存了 {len(data)} 条弹幕到: {filename}')
 
         except Exception as e:
             self.status_label.setText(f'保存失败: {str(e)}')
@@ -197,6 +210,7 @@ class DanmuApp(QWidget):
 
         finally:
             self.reset_ui()
+
 
     def show_error(self, msg):
         self.status_label.setText(f'错误: {msg}')
