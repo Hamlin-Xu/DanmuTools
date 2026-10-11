@@ -1,4 +1,3 @@
-import re
 import time
 import math
 import zlib
@@ -7,7 +6,7 @@ import xmltodict
 from .base import BaseFetcher
 
 class IqiyiFetcher(BaseFetcher):
-    """爱奇艺弹幕抓取器"""
+    """爱奇艺弹幕抓取器（支持单集；全集暂不可靠，自动降级为单集）"""
     MAX_DURATION = 7200  # 2小时，单位: 秒
 
     def extract_video_id(self):
@@ -127,7 +126,7 @@ class IqiyiFetcher(BaseFetcher):
             return danmakus
         except Exception:
             return []
-        
+
     def get_video_info(self):
         """
         获取视频信息，返回字典，至少包含 'title' 键
@@ -136,7 +135,7 @@ class IqiyiFetcher(BaseFetcher):
             tvid = self.extract_video_id()
             if not tvid:
                 return {"title": "弹幕"}
-            
+
             info_url = f"https://mesh.if.iqiyi.com/player/lw/video/playervideoinfo?id={tvid}&locale=cn_s"
             headers = {"User-Agent": "Mozilla/5.0"}
             resp = requests.get(info_url, headers=headers, timeout=8)
@@ -149,8 +148,44 @@ class IqiyiFetcher(BaseFetcher):
         except Exception:
             return {"title": "弹幕"}
 
-    def run(self):
-        """执行抓取任务"""
+    def enumerate_episodes(self):
+        """爱奇艺剧集信息由 JS 渲染、tvid 未内嵌在静态页面中，
+        目前没有可靠的公开剧集列表接口，返回 None 自动降级为单集下载。"""
+        return None
+
+    def _fetch_episode(self, ep):
+        """下载单集弹幕（ep 需含 tvid，可选 duration）"""
+        tvid = ep.get("tvid")
+        if not tvid:
+            raise ValueError("无法获取 tvid")
+
+        duration = ep.get("duration") or self.get_duration(tvid)
+        if not isinstance(duration, (int, float)) or duration <= 0:
+            duration = self.MAX_DURATION
+
+        total_parts = max(1, math.ceil(duration / 300))
+        all_danmakus = []
+        last_percent = 0
+        self.running = getattr(self, "running", True)
+        for part in range(1, total_parts + 1):
+            if not self.running:
+                break
+            part_data = self.fetch_danmaku_segment(tvid, part)
+            if isinstance(part_data, list):
+                all_danmakus.extend(part_data)
+            if not self.full_series:
+                percent = int((part / total_parts) * 100)
+                if percent > last_percent:
+                    try:
+                        self.progress.emit(percent)
+                    except Exception:
+                        pass
+                    last_percent = percent
+            time.sleep(0.05)
+        return all_danmakus
+
+    def _run_single(self):
+        """单集弹幕下载"""
         try:
             tvid = self.extract_video_id()
             if not tvid:
@@ -162,28 +197,11 @@ class IqiyiFetcher(BaseFetcher):
                 self.error.emit("无法获取视频时长，默认抓取2小时弹幕")
                 duration = self.MAX_DURATION
 
-            total_parts = max(1, math.ceil(duration / 300))
-            all_danmakus = []
-            last_percent = 0
-            self.running = getattr(self, "running", True)
-            for part in range(1, total_parts + 1):
-                if not self.running:
-                    break
-                part_data = self.fetch_danmaku_segment(tvid, part)
-                if isinstance(part_data, list):
-                    all_danmakus.extend(part_data)
-                percent = int((part / total_parts) * 100)
-                if percent > last_percent:
-                    try:
-                        self.progress.emit(percent)
-                    except Exception:
-                        pass
-                    last_percent = percent
-                time.sleep(0.05)
+            danmu = self._fetch_episode({"tvid": tvid, "duration": duration})
             try:
                 self.progress.emit(100)
             except Exception:
                 pass
-            self.finished.emit(all_danmakus, True)
+            self.finished.emit(danmu, True)
         except Exception as e:
             self.error.emit(f"爱奇艺弹幕抓取出错: {str(e)}")

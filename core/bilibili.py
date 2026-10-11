@@ -5,7 +5,7 @@ from .base import BaseFetcher
 
 
 class BilibiliFetcher(BaseFetcher):
-    """哔哩哔哩弹幕抓取器（支持番剧和普通视频，自动获取文件名）"""
+    """哔哩哔哩弹幕抓取器（支持番剧、普通视频、分P合集与番剧全集下载）"""
 
     def extract_video_id(self):
         """从URL中提取视频ID（BV号或AV号）"""
@@ -18,7 +18,7 @@ class BilibiliFetcher(BaseFetcher):
                     match = re.search(r'/video/(BV[0-9A-Za-z]{10})', location)
                     if match:
                         return match.group(1)
-            except:
+            except Exception:
                 pass
         # BV号
         match = re.search(r'(BV[0-9A-Za-z]{10})', self.url)
@@ -83,40 +83,117 @@ class BilibiliFetcher(BaseFetcher):
             return {"title": self.video_data.get("title") or "弹幕"}
         return {"title": "弹幕"}
 
-    def run(self):
-        """抓取弹幕"""
+    # ---- 弹幕解析 ----
+    def _parse_danmu(self, content):
+        """解析 B 站 XML 弹幕"""
+        root = ET.fromstring(content)
+        danmu = []
+        for d in root.findall('d'):
+            p_attr = d.get('p')
+            if not p_attr:
+                continue
+            p = p_attr.split(',')
+            danmu.append({
+                'time_offset': float(p[0]) * 1000,
+                'mode': int(p[1]),
+                'font_size': int(p[2]),
+                'color': int(p[3]),
+                'timestamp': int(p[4]),
+                'content': d.text or ''
+            })
+        return danmu
+
+    def _fetch_episode(self, ep):
+        """下载单集弹幕（ep 需含 cid，可选 bvid）"""
+        cid = ep.get("cid")
+        if not cid:
+            raise ValueError("未获取到cid")
+        bvid = ep.get("bvid") or ""
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": f"https://www.bilibili.com/video/{bvid}" if bvid else self.url
+        }
+        resp = requests.get(f'https://comment.bilibili.com/{cid}.xml', headers=headers, timeout=8)
+        resp.raise_for_status()
+        return self._parse_danmu(resp.content)
+
+    # ---- 全集枚举 ----
+    def enumerate_episodes(self):
+        """枚举剧集：番剧走 pgc 季 API，普通视频的分P合集走 view API"""
+        if "bangumi/play" in self.url:
+            return self._enumerate_bangumi()
+        return self._enumerate_pages()
+
+    def _enumerate_bangumi(self):
+        """番剧/影视全集：调用 pgc 季 API 获取所有分集"""
+        m = re.search(r'/bangumi/play/(ep|ss)(\d+)', self.url)
+        if not m:
+            return None
+        kind, num = m.group(1), m.group(2)
+        param = f"ep_id={num}" if kind == "ep" else f"season_id={num}"
+        api_url = f"https://api.bilibili.com/pgc/view/web/season?{param}"
+        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.bilibili.com/"}
+        resp = requests.get(api_url, headers=headers, timeout=8)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") != 0:
+            raise ValueError(f"B站API错误: {data.get('message','未知错误')}")
+
+        res = data.get("result") or {}
+        episodes = res.get("episodes") or []
+        if not episodes:
+            return None
+        if res.get("title"):
+            self.series_title = res["title"].strip()
+
+        result = []
+        for e in episodes:
+            ep_no = str(e.get("title") or "").strip()
+            long_title = (e.get("long_title") or "").strip()
+            if long_title:
+                title = f"{ep_no} {long_title}".strip()
+            elif ep_no:
+                title = ep_no
+            else:
+                title = f"第{len(result)+1}话"
+            result.append({
+                "cid": e.get("cid"),
+                "bvid": e.get("bvid"),
+                "title": title,
+            })
+        return result
+
+    def _enumerate_pages(self):
+        """普通视频分P合集：view API 的 pages 即各分P"""
         self.id = self.extract_video_id()
+        if not self.id:
+            return None
+        data = self._get_video_data()
+        pages = data.get("pages") or []
+        if len(pages) <= 1:
+            return None  # 单P视频不是剧集
+        if data.get("title"):
+            self.series_title = data["title"].strip()
+        result = []
+        for p in pages:
+            part = (p.get("part") or "").strip()
+            result.append({
+                "cid": p.get("cid"),
+                "bvid": p.get("bvid") or self.id,
+                "title": part or f"P{p.get('page')}",
+            })
+        return result
+
+    # ---- 单集下载 ----
+    def _run_single(self):
+        """单集弹幕下载"""
         try:
+            self.id = self.extract_video_id()
             video_data = self._get_video_data()
             cid = video_data.get("cid")
             if not cid:
                 raise ValueError("未获取到cid")
-
-            danmu_url = f'https://comment.bilibili.com/{cid}.xml'
-            headers = {
-                "User-Agent": "Mozilla/5.0",
-                "Referer": f"https://www.bilibili.com/video/{self.id}" if self.id else self.url
-            }
-            resp = requests.get(danmu_url, headers=headers, timeout=8)
-            resp.raise_for_status()
-
-            # 解析 XML 弹幕
-            root = ET.fromstring(resp.content)
-            danmu = []
-            for d in root.findall('d'):
-                p_attr = d.get('p')
-                if not p_attr:
-                    continue
-                p = p_attr.split(',')
-                danmu.append({
-                    'time_offset': float(p[0]) * 1000,
-                    'mode': int(p[1]),
-                    'font_size': int(p[2]),
-                    'color': int(p[3]),
-                    'timestamp': int(p[4]),
-                    'content': d.text or ''
-                })
-
+            danmu = self._fetch_episode({"cid": cid, "bvid": self.id})
             self.progress.emit(100)
             self.finished.emit(danmu, True)
         except Exception as e:
