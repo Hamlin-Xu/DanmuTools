@@ -1,4 +1,5 @@
 import re
+import html
 import requests
 import xml.etree.ElementTree as ET
 from .base import BaseFetcher
@@ -47,9 +48,11 @@ class BilibiliFetcher(BaseFetcher):
             cid_match = re.search(r'"cid":(\d+),', html)
             cid = cid_match.group(1) if cid_match else None
 
-            # 提取标题
+            # 提取标题（SEO 标题 = 系列名+集数+后缀，需解码实体并去掉 B站 SEO 后缀）
+            title = "弹幕"
             title_match = re.search(r'<meta itemProp="name" content="([^"]+)"', html)
-            title = title_match.group(1) if title_match else "弹幕"
+            if title_match:
+                title = self._clean_title(title_match.group(1))
 
             self.video_data = {"cid": cid, "title": title}
             return self.video_data
@@ -71,15 +74,27 @@ class BilibiliFetcher(BaseFetcher):
         self.video_data = data['data']
         return self.video_data
 
+    def _clean_title(self, title):
+        """解码 HTML 实体并去掉 B站 SEO 后缀，返回干净的标题"""
+        if not title:
+            return title
+        # 解码实体（&amp;nbsp; -> &nbsp; -> 空格，及其他实体）
+        title = title.replace('&amp;nbsp;', ' ').replace('&nbsp;', ' ').replace('\xa0', ' ')
+        title = html.unescape(title)
+        # 截断 B站 SEO 后缀（-番剧/-电影/-电视剧-全集-高清...-bilibili-哔哩哔哩）
+        title = re.split(r'-番剧|-电影|-电视剧', title)[0]
+        return title.strip()
+
     def get_video_info(self):
         """返回视频信息字典，用于自动生成文件名"""
         if hasattr(self, "video_data") and self.video_data:
             # 去除常见后缀
             if self.video_data["title"]:
+                title = self._clean_title(self.video_data["title"])
                 for pat in [r'[_-]?哔哩哔哩', r'[_-]?高清独家在线观看',
                             r'[_-]?高清独家在线播放', r'[_-]?番剧', r'[_-]?bilibili']:
-                    self.video_data["title"] = re.sub(pat, '', self.video_data["title"])
-                self.video_data["title"] = self.video_data["title"].strip()
+                    title = re.sub(pat, '', title)
+                self.video_data["title"] = title.strip()
             return {"title": self.video_data.get("title") or "弹幕"}
         return {"title": "弹幕"}
 
