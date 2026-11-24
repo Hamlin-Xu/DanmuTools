@@ -5,20 +5,39 @@ import requests
 from .base import BaseFetcher
 
 
-class TencentFetcher(BaseFetcher):
-    """腾讯视频弹幕抓取器（支持单集；全集为尽力而为，接口受站点保护）
+def _series_from_episode(title):
+    """从「龙族 第1季 第0话」这样的分集标题里剥出剧名"""
+    if not title:
+        return ""
+    name = re.sub(r"第\s*[0-9零一二三四五六七八九十百千]+\s*[话集期回]", "", title)
+    return name.strip(" -·:：")
 
-    修复说明：
-        - vid 直接从播放链接 URL 提取（`/x/cover/{cid}/{vid}.html`），不再依赖
-          已被腾讯改版移除的页面 `currentVideoInfo` 字段
-        - 视频时长从移动端页面（m.v.qq.com）解析，无法取得时自动改为
-          “逐段拉取直到弹幕段为空”的兜底方式
-        - 弹幕数据仍来自 `dm.video.qq.com/barrage/segment` 接口
+
+class TencentFetcher(BaseFetcher):
+    """腾讯视频弹幕抓取器（支持单集与全集）
+
+    全集枚举使用 Web 端「分集列表」接口：
+        POST pbaccess.video.qq.com/.../PageServer/GetPageData
+              ?video_appid=3000010&vplatform=2&vversion_name=8.2.95
+        body.page_params.page_id = "vsite_episode_list"
+    返回的每集都带 vid 与时长（秒），因此逐集抓弹幕时无需再请求播放页。
+
+    说明：
+        - vid 优先从播放链接 URL 提取（`/x/cover/{cid}/{vid}.html`）
+        - 名称搜索模式由 core/search.py 解析出 cid 后交给本类枚举分集
+        - 弹幕数据来自 `dm.video.qq.com/barrage/segment`，按 30 秒分段
     """
+    platform = "tencent"
+
     STEP_MS = 30000
     MAX_DURATION_MS = 7200000
     RETRY_COUNT = 3
     MAX_EMPTY_RUN = 3  # 无时长时，连续 N 个空段视为已拉完
+
+    PAGE_URL = ("https://pbaccess.video.qq.com/trpc.universal_backend_service."
+                "page_server_rpc.PageServer/GetPageData"
+                "?video_appid=3000010&vplatform=2&vversion_name=8.2.95")
+    MAX_PAGES = 60
 
     def _headers(self, referer=None):
         return {
@@ -28,7 +47,11 @@ class TencentFetcher(BaseFetcher):
 
     # ---- ID / 时长提取 ----
     def _extract_cid(self):
-        """从剧集封面链接提取 cid"""
+        """从剧集封面链接提取 cid；名称模式下来自搜索结果"""
+        if self.entry:
+            cid = (self.entry.get("extra") or {}).get("cid") or self.entry.get("id")
+            if cid:
+                return str(cid)
         m = re.search(r'/x/cover/([A-Za-z0-9]+)', self.url)
         return m.group(1) if m else None
 
@@ -150,7 +173,11 @@ class TencentFetcher(BaseFetcher):
         return danmu
 
     def get_video_info(self):
-        """返回文件名信息。标题来源优先级：PC页 currentVideoInfo → 移动端页 → PC页 og:title/<title>"""
+        """返回文件名信息。名称模式直接用剧集名；链接模式按 页面→移动端→og:title 依次尝试"""
+        if self.entry and self.entry.get("title"):
+            return {"title": self.entry["title"]}
+        if self.keyword and not self.url:
+            return {"title": self.keyword}
         title = None
         # 1) PC 页 currentVideoInfo（腾讯改版后可能已无该字段）
         try:
@@ -202,7 +229,7 @@ class TencentFetcher(BaseFetcher):
         html = self.fetch_page_html()
         idx = html.find('currentVideoInfo')
         if idx != -1:
-            snippet = html[idx:idx+2000].replace('undefined', 'null')
+            snippet = html[idx:idx + 2000].replace('undefined', 'null')
             m_vid = re.search(r'"vid"\s*:\s*"([^"]+)"', snippet)
             if m_vid:
                 info["vid"] = m_vid.group(1)
@@ -230,41 +257,102 @@ class TencentFetcher(BaseFetcher):
             return self._get_duration_from_mobile(cid, vid)
         return None
 
-    # ---- 全集枚举（尽力而为） ----
+    # ---- 全集枚举 ----
+    def _request_page(self, cid, page_num):
+        body = {
+            "page_params": {
+                "req_from": "web_vsite",
+                "page_id": "vsite_episode_list",
+                "page_type": "detail_operation",
+                "id_type": "1",
+                "page_size": "100",
+                "cid": cid,
+                "vid": "",
+                "lid": "",
+                "page_num": str(page_num),
+                "page_context": "",
+                "detail_page_type": "1",
+                "req_type": "6",
+                "req_from_second_type": "",
+                "year": "",
+                "tab_type": "",
+                "chapter_name": "",
+                "is_nocopyright": "false",
+            },
+            "has_cache": 1,
+        }
+        headers = {
+            "User-Agent": self._headers()["User-Agent"],
+            "Content-Type": "application/json",
+            "Origin": "https://v.qq.com",
+            "Referer": f"https://v.qq.com/x/cover/{cid}.html",
+        }
+        resp = requests.post(self.PAGE_URL, json=body, headers=headers, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+
+    def _episodes_from_page(self, data):
+        """从 GetPageData 响应里提取分集与是否还有下一页"""
+        episodes, has_next = [], False
+        modules = ((data.get("data") or {}).get("module_list_datas") or [])
+        for group in modules:
+            for module in (group.get("module_datas") or []):
+                item_lists = module.get("item_data_lists") or {}
+                for item in (item_lists.get("item_datas") or []):
+                    params = item.get("item_params") or {}
+                    vid = params.get("vid")
+                    if not vid:
+                        continue
+                    # 预告片/花絮不下载
+                    if str(params.get("is_trailer") or "0") == "1":
+                        continue
+                    title = (params.get("play_title") or params.get("title") or "").strip()
+                    if not title or title == "0":
+                        title = f"第{len(episodes) + 1}集"
+                    try:
+                        duration = int(float(params.get("duration") or 0)) * 1000
+                    except Exception:
+                        duration = None
+                    episodes.append({"vid": vid, "title": title, "duration": duration})
+                if str(module.get("has_next") or "false").lower() == "true":
+                    has_next = True
+        return episodes, has_next
+
     def enumerate_episodes(self):
-        """尽力获取剧集列表。腾讯剧集接口受站点保护，多数情况下会失败并降级为单集。"""
-        try:
-            cid = self._extract_cid()
-            if not cid:
-                return None
-            ts = int(time.time() * 1000)
-            api_url = "https://pbaccess.video.qq.com/trpc.qqvidcms_web.VidcmsWeb/GetEpisodeList?video_appid=3000010&vplatform=2"
-            body = {
-                "cid": cid, "from": 1, "platid": 2, "publishfmt": 0,
-                "sence": "cms", "timestamp": ts, "traceId": f"trace{ts}", "ut": "0",
-            }
-            resp = requests.post(api_url, headers={
-                "User-Agent": self._headers()["User-Agent"],
-                "Content-Type": "application/json",
-                "Origin": "https://v.qq.com",
-                "Referer": "https://v.qq.com/",
-            }, json=body, timeout=8)
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("ret") != 0:
-                return None
-            vid_list = data.get("vidList") or []
-            if not vid_list:
-                return None
-            if data.get("cidInfo", {}).get("title"):
-                self.series_title = data["cidInfo"]["title"]
-            episodes = []
-            for v in vid_list:
-                title = (v.get("title") or "").strip() or f"第{len(episodes)+1}集"
-                episodes.append({"vid": v.get("vid"), "duration": None, "title": title})
-            return episodes
-        except Exception:
+        """枚举腾讯视频剧集（分页拉取，按 vid 去重）"""
+        cid = self._extract_cid()
+        if not cid:
             return None
+        episodes, seen = [], set()
+        page_num, has_next = 0, True
+        while has_next and page_num < self.MAX_PAGES and not self.check_stop():
+            try:
+                data = self._request_page(cid, page_num)
+            except Exception:
+                break
+            page_eps, has_next = self._episodes_from_page(data)
+            new_count = 0
+            for ep in page_eps:
+                if ep["vid"] in seen:
+                    continue
+                seen.add(ep["vid"])
+                episodes.append(ep)
+                new_count += 1
+            # 接口在越界时会把第一页再返回一次，没有新分集就停
+            if new_count == 0:
+                break
+            page_num += 1
+
+        if not episodes:
+            return None
+        if self.entry and self.entry.get("title"):
+            self.series_title = self.entry["title"]
+        elif self.keyword and not self.url:
+            self.series_title = self.keyword
+        elif self.series_title == "全集弹幕":
+            # 链接模式：用首集标题去掉「第N话/集」当剧名
+            self.series_title = _series_from_episode(episodes[0].get("title")) or self.series_title
+        return episodes
 
     # ---- 单集弹幕 ----
     def _fetch_episode(self, ep):
@@ -282,7 +370,7 @@ class TencentFetcher(BaseFetcher):
             total_steps = max((duration + self.STEP_MS - 1) // self.STEP_MS, 1)
         current_step = 0
 
-        while self.running:
+        while not self.check_stop():
             if duration is not None:
                 if start >= duration:
                     break
@@ -313,20 +401,36 @@ class TencentFetcher(BaseFetcher):
         return danmu
 
     def _run_single(self):
-        """单集弹幕下载"""
+        """单集弹幕下载（链接模式取 URL 里的 vid；名称模式取枚举到的第一集）"""
         try:
-            # vid 优先从 URL 提取，其次回退页面解析
             cid = self._extract_cid()
             vid = self._extract_vid_from_url()
+            duration = None
+
+            if not vid and (self.keyword or self.entry):
+                # 名称模式：先解析剧集，再取第一集
+                if not self.resolve_entry():
+                    self.error.emit(f"未找到「{self.keyword}」对应的腾讯视频剧集")
+                    return
+                cid = self._extract_cid()
+                episodes = self.enumerate_episodes()
+                if not episodes:
+                    self.error.emit("未能获取该剧集的分集列表")
+                    return
+                first = episodes[0]
+                vid = first.get("vid")
+                duration = first.get("duration")
+                self.series_title = first.get("title") or self.series_title
+
             if not vid:
                 vid = self.extract_video_info_from_page().get("vid")
             if not vid:
                 self.error.emit("无法提取腾讯视频ID")
                 return
 
-            self.running = True if not hasattr(self, "running") else self.running
             # 时长优先移动端页面，其次 PC 页，取不到则用兜底循环
-            duration = self._get_duration_from_mobile(cid, vid) if cid else None
+            if not duration:
+                duration = self._get_duration_from_mobile(cid, vid) if cid else None
             if not duration:
                 duration = self.get_video_duration()
 

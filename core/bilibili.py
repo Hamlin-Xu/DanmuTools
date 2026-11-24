@@ -6,7 +6,11 @@ from .base import BaseFetcher
 
 
 class BilibiliFetcher(BaseFetcher):
-    """哔哩哔哩弹幕抓取器（支持番剧、普通视频、分P合集与番剧全集下载）"""
+    """哔哩哔哩弹幕抓取器（支持番剧、普通视频、分P合集与番剧全集下载）
+
+    名称搜索模式下 season_id 由 core/search.py 解析后传入，全集走 pgc 季 API。
+    """
+    platform = "bilibili"
 
     def extract_video_id(self):
         """从URL中提取视频ID（BV号或AV号）"""
@@ -87,6 +91,9 @@ class BilibiliFetcher(BaseFetcher):
 
     def get_video_info(self):
         """返回视频信息字典，用于自动生成文件名"""
+        if not self.url and (self.entry or self.keyword):
+            title = (self.entry or {}).get("title") or self.keyword or "弹幕"
+            return {"title": title}
         if hasattr(self, "video_data") and self.video_data:
             # 去除常见后缀
             if self.video_data["title"]:
@@ -135,6 +142,14 @@ class BilibiliFetcher(BaseFetcher):
     # ---- 全集枚举 ----
     def enumerate_episodes(self):
         """枚举剧集：番剧走 pgc 季 API，普通视频的分P合集走 view API"""
+        # 名称搜索模式：season_id 已在搜索结果中确定
+        if not self.url and (self.keyword or self.entry):
+            if not self.resolve_entry():
+                return None
+            season_id = (self.entry.get("extra") or {}).get("season_id") or self.entry.get("id")
+            if not season_id:
+                return None
+            return self._season_episodes(season_id=season_id)
         if "bangumi/play" in self.url:
             return self._enumerate_bangumi()
         return self._enumerate_pages()
@@ -145,7 +160,13 @@ class BilibiliFetcher(BaseFetcher):
         if not m:
             return None
         kind, num = m.group(1), m.group(2)
-        param = f"ep_id={num}" if kind == "ep" else f"season_id={num}"
+        if kind == "ep":
+            return self._season_episodes(ep_id=num)
+        return self._season_episodes(season_id=num)
+
+    def _season_episodes(self, ep_id=None, season_id=None):
+        """按 ep_id 或 season_id 拉取整季分集"""
+        param = f"ep_id={ep_id}" if ep_id else f"season_id={season_id}"
         api_url = f"https://api.bilibili.com/pgc/view/web/season?{param}"
         headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.bilibili.com/"}
         resp = requests.get(api_url, headers=headers, timeout=8)
@@ -203,6 +224,21 @@ class BilibiliFetcher(BaseFetcher):
     def _run_single(self):
         """单集弹幕下载"""
         try:
+            if not self.url and (self.keyword or self.entry):
+                if not self.resolve_entry():
+                    self.error.emit(f"未找到「{self.keyword}」对应的B站番剧")
+                    return
+                episodes = self.enumerate_episodes()
+                if not episodes:
+                    self.error.emit("未能获取该番剧的分集列表")
+                    return
+                first = episodes[0]
+                self.series_title = first.get("title") or self.series_title
+                danmu = self._fetch_episode(first)
+                self.progress.emit(100)
+                self.finished.emit(danmu, self.running)
+                return
+
             self.id = self.extract_video_id()
             video_data = self._get_video_data()
             cid = video_data.get("cid")

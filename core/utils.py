@@ -16,8 +16,10 @@ def save_as_bilibili_xml(danmu: List[Dict], filename: str):
     if not filename.endswith(".xml"):
         filename += ".xml"
     
-    # 确保目录存在
-    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    # 确保目录存在（filename 只有文件名时 dirname 为空，不能直接 makedirs）
+    folder = os.path.dirname(filename)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
     
     # 创建XML结构
     root = ET.Element('i')
