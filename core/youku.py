@@ -270,6 +270,10 @@ class YoukuFetcher(BaseFetcher):
                 break
 
         if not episodes:
+            if total == 0:
+                raise ValueError(
+                    "优酷没有该剧集的分集数据（多为优酷收录的其他平台内容，"
+                    "或已下架/地区限制），换一个候选项试试")
             return None
         # 若大量分集标题只是剧名（「少年歌行」×45），统一改成「第N集」，避免列表全是同一行字
         counts = {}

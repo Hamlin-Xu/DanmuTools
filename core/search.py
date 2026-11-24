@@ -207,6 +207,10 @@ def search_youku(keyword, limit=20):
         show_id = str(common.get("showId") or "")
         if not show_id or show_id in seen:
             continue
+        # isYouku=0 的是优酷搜索收录的其他平台内容（腾讯/爱奇艺/B站），
+        # 优酷本身没有分集和弹幕，下载必然为空，直接过滤掉。
+        if common.get("isYouku") not in (1, "1", True):
+            continue
         title = _clean((common.get("titleDTO") or {}).get("displayName"))
         if not title:
             # 兜底：部分卡片只有埋点里的 object_title
@@ -231,6 +235,8 @@ def search_youku(keyword, limit=20):
             "year": int(year_match.group(0)) if year_match else None,
             "kind": feature.split("·")[1].strip() if feature.count("·") >= 2 else "",
             "episodes": episodes,
+            # hasYouku=0 通常表示尚未上线/预约，分集列表可能为空
+            "upcoming": common.get("hasYouku") in (0, "0", False),
             "extra": {"showId": show_id, "updateNotice": notice},
         })
         if len(results) >= limit:
@@ -254,6 +260,11 @@ def search_iqiyi(keyword, limit=20):
         album_id = album.get("qipuId")
         # template==101 为长剧/动漫专辑卡；108 是短视频，无法下载全集
         if not album_id or tpl.get("template") != 101:
+            continue
+        # siteId=qq/bilibili 等是爱奇艺搜索收录的外站内容（点开跳转外站），
+        # 爱奇艺没有它们的分集和弹幕，直接过滤。
+        site_id = str(album.get("siteId") or "").lower()
+        if site_id not in ("", "iqiyi"):
             continue
         album_id = str(album_id)
         if album_id in seen:
@@ -300,37 +311,40 @@ def _bili_session():
 
 
 def search_bilibili(keyword, limit=20):
-    """B站搜索：番剧/影视（media_bangumi）+ 普通投稿视频（video）都搜。
+    """B站搜索：番剧/国创（media_bangumi）+ 电影/电视剧/纪录片（media_ft）
+    + 普通投稿视频（video）三类都查。
 
+    media_bangumi 只覆盖番剧/国创，纪录片（如《人生一串》）和影视剧在 media_ft 里；
     普通视频按 bvid 记录，下载时直接取该视频（多P则展开各分P）。
     """
     session = _bili_session()
     results, seen = [], set()
 
-    bangumi = _bili_query(session, "media_bangumi", keyword)
-    for item in ((bangumi.get("data") or {}).get("result") or []):
-        season_id = item.get("season_id")
-        if not season_id:
-            continue
-        season_id = str(season_id)
-        if season_id in seen:
-            continue
-        title = _clean(item.get("title") or item.get("org_title"))
-        if not title:
-            continue
-        seen.add(season_id)
-        eps = item.get("eps") or []
-        results.append({
-            "platform": "bilibili",
-            "id": season_id,
-            "title": title,
-            "year": None,
-            "kind": _clean(item.get("season_type_name")),
-            "episodes": item.get("ep_size") or (len(eps) or None),
-            "extra": {"season_id": season_id,
-                      "media_id": item.get("media_id"),
-                      "eps": eps},
-        })
+    for search_type in ("media_bangumi", "media_ft"):
+        data = _bili_query(session, search_type, keyword)
+        for item in ((data.get("data") or {}).get("result") or []):
+            season_id = item.get("season_id")
+            if not season_id:
+                continue
+            season_id = str(season_id)
+            if season_id in seen:
+                continue
+            title = _clean(item.get("title") or item.get("org_title"))
+            if not title:
+                continue
+            seen.add(season_id)
+            eps = item.get("eps") or []
+            results.append({
+                "platform": "bilibili",
+                "id": season_id,
+                "title": title,
+                "year": None,
+                "kind": _clean(item.get("season_type_name")),
+                "episodes": item.get("ep_size") or (len(eps) or None),
+                "extra": {"season_id": season_id,
+                          "media_id": item.get("media_id"),
+                          "eps": eps},
+            })
 
     video = _bili_query(session, "video", keyword)
     video_results = []

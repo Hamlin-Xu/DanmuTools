@@ -95,6 +95,8 @@ class DanmuApp(QWidget):
         self.current_episodes = []
         self.series_title = ""
         self._load_token = 0
+        self._search_token = 0
+        self._threads = []          # 持有正在运行的线程，避免被 GC 后销毁
         self.init_ui()
         self.setup_connections()
 
@@ -245,6 +247,15 @@ class DanmuApp(QWidget):
         self.stop_btn.clicked.connect(self.stop_fetch)
 
     # ---- 搜索 ----
+    def _track_thread(self, thread):
+        """记录后台线程，结束后自动移除，防止运行中的 QThread 被回收"""
+        self._threads.append(thread)
+        thread.finished.connect(lambda t=thread: self._untrack_thread(t))
+
+    def _untrack_thread(self, thread):
+        if thread in self._threads:
+            self._threads.remove(thread)
+
     def start_search(self):
         keyword = self.keyword_input.text().strip()
         if not keyword:
@@ -255,6 +266,8 @@ class DanmuApp(QWidget):
         platform = PLATFORM_BY_LABEL.get(self.platform_combo.currentText())
         platforms = [platform] if platform else None
 
+        self._search_token += 1
+        token = self._search_token
         self.results = []
         self.result_list.clear()
         self.set_episodes([], '')
@@ -264,10 +277,14 @@ class DanmuApp(QWidget):
         self.search_btn.setEnabled(False)
 
         self.search_worker = SearchWorker(keyword, platforms, self)
-        self.search_worker.done.connect(self.on_search_done)
+        self.search_worker.done.connect(
+            lambda results, errors, t=token: self.on_search_done(results, errors, t))
+        self._track_thread(self.search_worker)
         self.search_worker.start()
 
-    def on_search_done(self, results, errors):
+    def on_search_done(self, results, errors, token=None):
+        if token is not None and token != self._search_token:
+            return      # 过期结果（用户已重新搜索）
         self.search_btn.setEnabled(True)
         self.results = results
         self.result_list.clear()
@@ -340,6 +357,7 @@ class DanmuApp(QWidget):
             lambda e, eps, title: self.on_episodes_loaded(e, eps, title, token))
         self.episode_loader.failed.connect(
             lambda e, msg: self.on_episodes_failed(e, msg, token))
+        self._track_thread(self.episode_loader)
         self.episode_loader.start()
 
     def on_episodes_loaded(self, entry, episodes, title, token):
@@ -510,7 +528,7 @@ class DanmuApp(QWidget):
     def show_error(self, msg):
         self.status_label.setText(f'错误：{msg}')
         QMessageBox.critical(self, '错误', msg)
-        self.reset_ui()
+        self.reset_ui(force_stop=True)
 
     # ---- 保存 ----
     @staticmethod
@@ -610,8 +628,31 @@ class DanmuApp(QWidget):
             return YoukuFetcher(**kwargs)
         raise ValueError('不支持的平台')
 
-    def reset_ui(self):
+    def reset_ui(self, force_stop=False):
+        fetcher = self.fetcher
+        if fetcher is not None and (force_stop or fetcher.isRunning()):
+            try:
+                fetcher.stop()
+                fetcher.wait(1500)
+            except Exception:
+                pass
         self.fetcher = None
         self.search_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.update_count()
+
+    def closeEvent(self, event):
+        """关闭窗口时先停掉后台线程，避免 QThread 运行中被销毁导致崩溃"""
+        try:
+            if self.fetcher is not None:
+                self.fetcher.stop()
+                self.fetcher.wait(2000)
+            for thread in list(self._threads):
+                if thread.isRunning():
+                    thread.quit()
+                    if not thread.wait(2000):
+                        thread.terminate()
+                        thread.wait(800)
+        except Exception:
+            pass
+        super().closeEvent(event)

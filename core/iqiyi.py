@@ -155,8 +155,12 @@ class IqiyiFetcher(BaseFetcher):
             return None
         try:
             data = self._request_selector(album_id)
-        except Exception:
-            return None
+        except Exception as e:
+            raise ValueError(f"爱奇艺选集接口请求失败：{e}")
+        if data.get("status_code") == -1:
+            raise ValueError(
+                "爱奇艺没有该专辑（可能搜索到的是外站跳转内容，或专辑已下架），"
+                "换一个候选项试试")
 
         videos = ((data.get("data") or {}).get("videos") or {})
         if not isinstance(videos, dict):
