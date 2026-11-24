@@ -300,28 +300,15 @@ def _bili_session():
 
 
 def search_bilibili(keyword, limit=20):
-    url = "https://api.bilibili.com/x/web-interface/search/type"
-    params = {"search_type": "media_bangumi", "keyword": keyword}
+    """B站搜索：番剧/影视（media_bangumi）+ 普通投稿视频（video）都搜。
+
+    普通视频按 bvid 记录，下载时直接取该视频（多P则展开各分P）。
+    """
     session = _bili_session()
-    data, last_error = None, None
-    for attempt in range(3):
-        try:
-            resp = session.get(url, params=params, timeout=TIMEOUT)
-            if not resp.headers.get("content-type", "").startswith("application/json"):
-                raise ValueError(f"B站搜索被风控（HTTP {resp.status_code}）")
-            data = resp.json()
-            if data.get("code") == 0:
-                break
-            last_error = ValueError(f"B站搜索失败: {data.get('message')}")
-        except Exception as e:
-            last_error = e
-        data = None
-        if attempt < 2:
-            time.sleep(1.2)
-    if data is None:
-        raise last_error or ValueError("B站搜索失败")
     results, seen = [], set()
-    for item in ((data.get("data") or {}).get("result") or []):
+
+    bangumi = _bili_query(session, "media_bangumi", keyword)
+    for item in ((bangumi.get("data") or {}).get("result") or []):
         season_id = item.get("season_id")
         if not season_id:
             continue
@@ -344,9 +331,60 @@ def search_bilibili(keyword, limit=20):
                       "media_id": item.get("media_id"),
                       "eps": eps},
         })
-        if len(results) >= limit:
-            break
-    return results
+
+    video = _bili_query(session, "video", keyword)
+    video_results = []
+    for item in ((video.get("data") or {}).get("result") or []):
+        bvid = item.get("bvid")
+        if not bvid or bvid in seen:
+            continue
+        seen.add(bvid)
+        title = _clean(item.get("title"))
+        if not title:
+            continue
+        year = None
+        senddate = item.get("senddate")
+        if isinstance(senddate, int) and senddate > 0:
+            year = time.localtime(senddate).tm_year
+        author = _clean(item.get("author"))
+        video_results.append({
+            "platform": "bilibili",
+            "id": bvid,
+            "title": title,
+            "year": year,
+            "kind": f"视频 · {author}" if author else "视频",
+            "episodes": None,
+            "is_video": True,
+            "extra": {"bvid": bvid, "author": author,
+                      "duration": _clean(item.get("duration")),
+                      "play": item.get("play")},
+        })
+
+    # 同分时番剧排在视频之前；番剧结果够多时少放些视频，避免列表被投稿视频淹没
+    video_slots = 10 if len(results) >= 5 else limit
+    results.extend(video_results[:video_slots])
+    return results[:limit * 2]
+
+
+def _bili_query(session, search_type, keyword):
+    """调用一次 B站搜索接口，带风控重试；失败抛异常"""
+    url = "https://api.bilibili.com/x/web-interface/search/type"
+    params = {"search_type": search_type, "keyword": keyword, "page": 1}
+    last_error = None
+    for attempt in range(3):
+        try:
+            resp = session.get(url, params=params, timeout=TIMEOUT)
+            if not resp.headers.get("content-type", "").startswith("application/json"):
+                raise ValueError(f"B站搜索被风控（HTTP {resp.status_code}）")
+            data = resp.json()
+            if data.get("code") == 0:
+                return data
+            last_error = ValueError(f"B站搜索失败: {data.get('message')}")
+        except Exception as e:
+            last_error = e
+        if attempt < 2:
+            time.sleep(1.2)
+    raise last_error or ValueError("B站搜索失败")
 
 
 # --------------------------------------------------------------------------- #
@@ -403,10 +441,11 @@ def _title_score(title, keyword):
 
 
 def sort_results(results, keyword):
-    """按用户最可能想要的程度排序：匹配度 -> 已开播 -> 有集数 -> 标题更短"""
+    """按用户最可能想要的程度排序：匹配度 -> 已开播 -> 番剧优先于投稿视频 -> 有集数 -> 标题更短"""
     return sorted(results, key=lambda r: (
         _title_score(r.get("title"), keyword),
         1 if r.get("upcoming") else 0,
+        1 if r.get("is_video") else 0,
         0 if r.get("episodes") else 1,
         len(re.sub(r"\s+", "", r.get("title") or "")),
     ))

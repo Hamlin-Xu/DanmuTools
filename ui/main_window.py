@@ -273,8 +273,16 @@ class DanmuApp(QWidget):
         self.result_list.clear()
         for entry in results:
             label = self._entry_label(entry)
+            extra = entry.get("extra") or {}
+            tip = [label]
+            if extra.get("author"):
+                tip.append(f'UP主：{extra["author"]}')
+            if extra.get("duration"):
+                tip.append(f'时长：{extra["duration"]}')
+            if extra.get("play"):
+                tip.append(f'{extra["play"]} 播放')
             item = QListWidgetItem(label)
-            item.setToolTip(label)
+            item.setToolTip('\n'.join(tip))
             self.result_list.addItem(item)
 
         if not results:
@@ -551,10 +559,29 @@ class DanmuApp(QWidget):
                 saved += 1
 
             done_word = '完成' if completed else '已停止'
-            self.status_label.setText(f'{done_word}：已保存 {saved} 集弹幕')
+            empty = len(results) - saved
+            if saved == 0:
+                # 没有写入任何文件时把刚建的空目录删掉，避免留下空文件夹
+                try:
+                    if os.path.isdir(series_dir) and not os.listdir(series_dir):
+                        os.rmdir(series_dir)
+                except OSError:
+                    pass
+                self.status_label.setText(f'{done_word}：所选分集暂无弹幕（共 {len(results)} 集）')
+                QMessageBox.warning(
+                    self, done_word,
+                    f'{done_word}，但所选 {len(results)} 集都没有获取到弹幕。\n'
+                    '可能该视频已关闭弹幕、弹幕尚未生成，或分集已下架。')
+                return
+            tip = f'{done_word}：已保存 {saved} 集弹幕'
+            if empty:
+                tip += f'（{empty} 集无弹幕已跳过）'
+            self.status_label.setText(tip)
             QMessageBox.information(
                 self, done_word,
-                f'{done_word}\n共保存 {saved} 集弹幕\n保存目录：{series_dir}')
+                f'{done_word}\n共保存 {saved} 集弹幕'
+                + (f'，{empty} 集无弹幕已跳过' if empty else '')
+                + f'\n保存目录：{series_dir}')
 
         except Exception as e:
             self.status_label.setText(f'保存失败：{e}')

@@ -142,17 +142,55 @@ class BilibiliFetcher(BaseFetcher):
     # ---- 全集枚举 ----
     def enumerate_episodes(self):
         """枚举剧集：番剧走 pgc 季 API，普通视频的分P合集走 view API"""
-        # 名称搜索模式：season_id 已在搜索结果中确定
+        # 名称搜索模式：搜索结果已确定是番剧（season_id）还是普通视频（bvid）
         if not self.url and (self.keyword or self.entry):
             if not self.resolve_entry():
                 return None
-            season_id = (self.entry.get("extra") or {}).get("season_id") or self.entry.get("id")
+            extra = self.entry.get("extra") or {}
+            bvid = extra.get("bvid") or (self.entry.get("id")
+                                         if self.entry.get("is_video") else None)
+            if bvid:
+                return self._episodes_from_bvid(bvid)
+            season_id = extra.get("season_id") or self.entry.get("id")
             if not season_id:
                 return None
             return self._season_episodes(season_id=season_id)
         if "bangumi/play" in self.url:
             return self._enumerate_bangumi()
         return self._enumerate_pages()
+
+    def _episodes_from_bvid(self, bvid):
+        """普通投稿视频：单P即一集，多P展开为各分P"""
+        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.bilibili.com/"}
+        resp = requests.get(f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}",
+                            headers=headers, timeout=8)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") != 0:
+            raise ValueError(f"B站API错误: {data.get('message', '未知错误')}")
+
+        info = data.get("data") or {}
+        pages = info.get("pages") or []
+        title = self._clean_title(info.get("title") or "")
+        if len(pages) <= 1:
+            cid = (pages[0].get("cid") if pages else None) or info.get("cid")
+            if not cid:
+                return None
+            if title:
+                self.series_title = title
+            return [{"cid": cid, "bvid": bvid, "title": title or bvid}]
+
+        if title:
+            self.series_title = title
+        result = []
+        for p in pages:
+            part = (p.get("part") or "").strip()
+            result.append({
+                "cid": p.get("cid"),
+                "bvid": bvid,
+                "title": part or f"P{p.get('page')}",
+            })
+        return result
 
     def _enumerate_bangumi(self):
         """番剧/影视全集：调用 pgc 季 API 获取所有分集"""
@@ -226,11 +264,11 @@ class BilibiliFetcher(BaseFetcher):
         try:
             if not self.url and (self.keyword or self.entry):
                 if not self.resolve_entry():
-                    self.error.emit(f"未找到「{self.keyword}」对应的B站番剧")
+                    self.error.emit(f"未找到「{self.keyword}」对应的B站番剧或视频")
                     return
                 episodes = self.enumerate_episodes()
                 if not episodes:
-                    self.error.emit("未能获取该番剧的分集列表")
+                    self.error.emit("未能获取该视频的分集列表")
                     return
                 first = episodes[0]
                 self.series_title = first.get("title") or self.series_title

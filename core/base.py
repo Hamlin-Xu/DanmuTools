@@ -128,7 +128,7 @@ class BaseFetcher(QThread):
             if self.entry and self.entry.get("title") and self.series_title == "全集弹幕":
                 self.series_title = self.entry["title"]
 
-            results, failed = [], 0
+            results, failed, total_danmu = [], 0, 0
             for pos, ep in enumerate(episodes, 1):
                 if self.check_stop():
                     break
@@ -141,12 +141,16 @@ class BaseFetcher(QThread):
                     failed += 1
                     self.series_status.emit(f"第 {pos}/{total} 集失败（{e}），继续下一集")
                     danmu = []
+                total_danmu += len(danmu)
                 results.append({"index": index, "title": title, "danmu": danmu})
                 self.progress.emit(int(pos / total * 100))
 
             completed = self.running
             if completed:
-                msg = "全集下载完成"
+                if total_danmu == 0:
+                    msg = "未获取到任何弹幕（该视频可能已关闭弹幕或暂无弹幕）"
+                else:
+                    msg = "全集下载完成"
                 if failed:
                     msg += f"（{failed} 集失败）"
                 self.series_status.emit(msg)

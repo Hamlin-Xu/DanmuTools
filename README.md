@@ -9,9 +9,11 @@
 | 平台 | 单集/选集下载 | 全集枚举 | 按剧集名称搜索 |
 | --- | :---: | :---: | :---: |
 | 爱奇艺（iqiyi.com） | ✅ | ✅ | ✅ |
-| 哔哩哔哩（bilibili.com） | ✅ | ✅ | ✅ |
+| 哔哩哔哩（bilibili.com） | ✅ | ✅ | ✅ 番剧 + 普通视频 |
 | 优酷（youku.com） | ✅ | ✅ | ✅ |
 | 腾讯视频（v.qq.com） | ✅ | ✅ | ✅ |
+
+> B站除了番剧/影视，**普通投稿视频**（BV 号）也能搜到：单P视频直接下该视频弹幕，多P视频自动展开成各分P，按集勾选下载。
 
 ## 功能特色
 
@@ -26,7 +28,7 @@
 > - 腾讯视频：通过 `PageServer/GetPageData` 分集列表接口枚举，自动跳过预告片、识别预约中剧集；
 > - 优酷：从开放 API `shows/videos.json` 分页枚举；
 > - 爱奇艺：以专辑 ID 调 `tvg/v2/selector` 枚举；
-> - B站：番剧走 `pgc/view/web/season`，UP 主分P合集走 `web-interface/view`。
+> - B站：番剧走 `pgc/view/web/season`；普通视频/UP 主分P合集走 `web-interface/view`（搜索时 `search_type=media_bangumi` 与 `search_type=video` 都会查）。
 >
 > 若某平台接口临时变动导致枚举失败，界面会提示「分集加载失败」，可换一个候选剧集或换平台重试。
 
@@ -65,7 +67,7 @@ DanmuTools/
 ├── core/
 │   ├── base.py              # BaseFetcher 抽象类（选集下载通用流程、搜索解析）
 │   ├── search.py            # 四平台剧集搜索与候选排序
-│   ├── bilibili.py          # B站弹幕抓取器（番剧/分P合集）
+│   ├── bilibili.py          # B站弹幕抓取器（番剧/普通视频/分P合集）
 │   ├── iqiyi.py             # 爱奇艺弹幕抓取器
 │   ├── tencent.py           # 腾讯视频弹幕抓取器
 │   ├── youku.py             # 优酷弹幕抓取器
