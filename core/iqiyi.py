@@ -28,8 +28,10 @@ class IqiyiFetcher(BaseFetcher):
     SECRET_KEY = "howcuteitis"
     GOOGLEBOT_UA = "Googlebot/2.1 (+http://www.google.com/bot.html)"
 
-    def __init__(self, url=None, full_series=False, keyword=None, entry=None):
-        super().__init__(url=url, full_series=full_series, keyword=keyword, entry=entry)
+    def __init__(self, url=None, full_series=False, keyword=None, entry=None,
+                 episodes=None):
+        super().__init__(url=url, full_series=full_series, keyword=keyword,
+                         entry=entry, episodes=episodes)
         self._tvid_cache = None
         self._series_name_cache = None
 

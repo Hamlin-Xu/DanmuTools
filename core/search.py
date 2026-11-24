@@ -366,6 +366,9 @@ def search(keyword, platforms=None, on_error=None):
     :param keyword:   剧集名称
     :param platforms: 平台 key 列表，None 表示全部
     :param on_error:  可选回调 on_error(platform, exception)，用于上报单平台错误
+
+    结果按「与关键词的匹配度、是否已开播、是否已知集数、标题长度」排序，
+    名称完全一致的排最前，预约中/未开播的剧集排最后。
     """
     keyword = (keyword or "").strip()
     if not keyword:
@@ -381,34 +384,37 @@ def search(keyword, platforms=None, on_error=None):
         except Exception as e:  # 单平台失败不影响其它平台
             if on_error:
                 on_error(key, e)
-    return results
+    return sort_results(results, keyword)
+
+
+def _title_score(title, keyword):
+    """名称匹配度：完全相同 0 < 前缀 1 < 包含 2 < 其它 3"""
+    title = re.sub(r"\s+", "", title or "")
+    kw = re.sub(r"\s+", "", keyword or "")
+    if not kw:
+        return 3
+    if title == kw:
+        return 0
+    if title.startswith(kw) or kw.startswith(title):
+        return 1
+    if kw in title:
+        return 2
+    return 3
+
+
+def sort_results(results, keyword):
+    """按用户最可能想要的程度排序：匹配度 -> 已开播 -> 有集数 -> 标题更短"""
+    return sorted(results, key=lambda r: (
+        _title_score(r.get("title"), keyword),
+        1 if r.get("upcoming") else 0,
+        0 if r.get("episodes") else 1,
+        len(re.sub(r"\s+", "", r.get("title") or "")),
+    ))
 
 
 def pick_best(results, keyword, platform=None):
-    """从候选里挑一个最匹配的。
-
-    排序依据（依次）：名称匹配度（完全相同 < 前缀 < 包含 < 其它）
-    -> 是否已开播（预约中的剧集没有正片）-> 是否已知集数 -> 标题更短者优先。
-    """
+    """从候选里挑一个最匹配的（排序规则同 sort_results）"""
     pool = [r for r in results if not platform or r["platform"] == platform]
     if not pool:
         return None
-    kw = re.sub(r"\s+", "", keyword)
-
-    def score(r):
-        title = re.sub(r"\s+", "", r["title"])
-        if title == kw:
-            return 0
-        if title.startswith(kw) or kw.startswith(title):
-            return 1
-        if kw in title:
-            return 2
-        return 3
-
-    def sort_key(r):
-        return (score(r),
-                1 if r.get("upcoming") else 0,
-                0 if r.get("episodes") else 1,
-                len(re.sub(r"\s+", "", r["title"])))
-
-    return sorted(pool, key=sort_key)[0]
+    return sort_results(pool, keyword)[0]

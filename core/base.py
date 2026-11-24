@@ -17,6 +17,9 @@ class BaseFetcher(QThread):
         1. 链接模式：传入 url
         2. 名称模式：传入 keyword（可再传入 entry 跳过搜索，直接用用户选中的剧集）
 
+    全集下载可以只下载部分分集：传入 episodes（已选中的分集列表）时会跳过枚举，
+    直接按列表逐集下载；列表元素需含 index（用于文件编号）。
+
     子类需要实现：
         platform              平台标识（iqiyi/tencent/bilibili/youku）
         enumerate_episodes()  返回剧集列表 [{'id':..., 'title':...}, ...]；
@@ -32,12 +35,13 @@ class BaseFetcher(QThread):
 
     platform = None
 
-    def __init__(self, url=None, full_series=False, keyword=None, entry=None):
+    def __init__(self, url=None, full_series=False, keyword=None, entry=None, episodes=None):
         super().__init__()
         self.url = (url or "").strip()
         self.keyword = (keyword or "").strip()
         self.entry = entry or None          # 用户在搜索结果里选中的剧集
         self.full_series = full_series
+        self.preset_episodes = episodes or None   # 用户勾选的分集（跳过枚举）
         self.running = True
         self.series_title = "全集弹幕"       # 全集剧名，可在 enumerate_episodes 中覆盖
 
@@ -105,12 +109,15 @@ class BaseFetcher(QThread):
             self.error.emit(f"抓取出错: {e}")
 
     def _run_series(self):
-        """全集下载主流程：枚举剧集 -> 逐集下载 -> 收集每集结果"""
+        """全集/选集下载主流程：确定分集 -> 逐集下载 -> 收集每集结果"""
         try:
-            episodes = self.enumerate_episodes()
+            if self.preset_episodes:
+                episodes = self.preset_episodes
+            else:
+                episodes = self.enumerate_episodes()
             if not episodes:
-                if self.keyword:
-                    self.error.emit(f"未在{self.keyword}找到可下载的剧集，请换个名称或选择平台后重试")
+                if self.keyword or self.entry:
+                    self.error.emit(f"未在{self.keyword or self._entry_title() or '该剧集'}找到可下载的剧集，请换个名称或选择平台后重试")
                     return
                 self.series_status.emit("未识别为剧集，或该平台暂不支持全集，已降级为单集下载")
                 # 降级为单集下载：恢复单集进度显示（避免进度条停在 0）
@@ -122,19 +129,20 @@ class BaseFetcher(QThread):
                 self.series_title = self.entry["title"]
 
             results, failed = [], 0
-            for idx, ep in enumerate(episodes, 1):
+            for pos, ep in enumerate(episodes, 1):
                 if self.check_stop():
                     break
-                title = ep.get("title") or f"第{idx}集"
-                self.series_status.emit(f"第 {idx}/{total} 集：{title}")
+                title = ep.get("title") or f"第{pos}集"
+                index = ep.get("index") or pos
+                self.series_status.emit(f"第 {pos}/{total} 集：{title}")
                 try:
                     danmu = self._fetch_episode(ep)
                 except Exception as e:
                     failed += 1
-                    self.series_status.emit(f"第 {idx}/{total} 集失败（{e}），继续下一集")
+                    self.series_status.emit(f"第 {pos}/{total} 集失败（{e}），继续下一集")
                     danmu = []
-                results.append((title, danmu))
-                self.progress.emit(int(idx / total * 100))
+                results.append({"index": index, "title": title, "danmu": danmu})
+                self.progress.emit(int(pos / total * 100))
 
             completed = self.running
             if completed:

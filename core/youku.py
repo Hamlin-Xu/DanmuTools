@@ -73,8 +73,10 @@ class YoukuFetcher(BaseFetcher):
     """
     platform = "youku"
 
-    def __init__(self, url=None, full_series=False, keyword=None, entry=None):
-        super().__init__(url=url, full_series=full_series, keyword=keyword, entry=entry)
+    def __init__(self, url=None, full_series=False, keyword=None, entry=None,
+                 episodes=None):
+        super().__init__(url=url, full_series=full_series, keyword=keyword,
+                         entry=entry, episodes=episodes)
         self._session = None
         self._page_data_cache = None
 
@@ -242,7 +244,11 @@ class YoukuFetcher(BaseFetcher):
                 seq = str(v.get("seq") or "").strip()
                 name = (v.get("title") or "").strip()
                 if seq and name:
-                    title = f"第{seq}集 {name}"
+                    title = name
+                    # 优酷的标题常带尾号（「少年歌行 01」），界面已显示集号，去掉重复
+                    tail = re.search(r'[ \.\-_]*(\d+)\s*$', title)
+                    if tail and tail.group(1).lstrip("0") == seq.lstrip("0"):
+                        title = title[:tail.start()].strip() or f"第{seq}集"
                 elif name:
                     title = name
                 elif seq:
@@ -253,7 +259,8 @@ class YoukuFetcher(BaseFetcher):
                     duration = int(float(v.get("duration") or 0))
                 except Exception:
                     duration = None
-                episodes.append({"vid": vid, "title": title, "duration": duration})
+                episodes.append({"vid": vid, "title": title, "duration": duration,
+                                 "_seq": seq})
             page += 1
             if not videos:
                 break
@@ -264,6 +271,15 @@ class YoukuFetcher(BaseFetcher):
 
         if not episodes:
             return None
+        # 若大量分集标题只是剧名（「少年歌行」×45），统一改成「第N集」，避免列表全是同一行字
+        counts = {}
+        for ep in episodes:
+            counts[ep["title"]] = counts.get(ep["title"], 0) + 1
+        for pos, ep in enumerate(episodes, 1):
+            if counts.get(ep["title"], 0) > 3:
+                ep["title"] = f"第{pos}集"
+        for ep in episodes:
+            ep.pop("_seq", None)
         if self.entry and self.entry.get("title"):
             self.series_title = self.entry["title"]
         elif self.keyword and not self.url:
