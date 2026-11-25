@@ -6,6 +6,16 @@ from datetime import timedelta
 import xml.etree.ElementTree as ET
 from typing import List, Dict
 
+# XML 1.0 不允许的控制字符（保留 \t \n \r）
+_ILLEGAL_XML_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _clean_text(value):
+    """去掉弹幕文本里 XML 不支持的控制字符，避免写出无法解析的 XML"""
+    text = "" if value is None else str(value)
+    return _ILLEGAL_XML_CHARS.sub("", text)
+
+
 def save_as_bilibili_xml(danmu: List[Dict], filename: str):
     """
     保存为B站兼容的XML格式
@@ -31,7 +41,7 @@ def save_as_bilibili_xml(danmu: List[Dict], filename: str):
     
     # 添加弹幕数据
     for item in danmu:
-        time_sec = float(item.get("time_offset", 0)) / 1000.0
+        time_sec = float(item.get("time_offset", 0) or 0) / 1000.0
         danmu_type = item.get("mode", 1)
         font_size = item.get("font_size", 25)
         color = item.get("color", 16777215)
@@ -41,7 +51,7 @@ def save_as_bilibili_xml(danmu: List[Dict], filename: str):
         
         d = ET.SubElement(root, "d")
         d.set("p", p_attr)
-        d.text = item.get("content", "")
+        d.text = _clean_text(item.get("content", ""))
     
     # 保存文件
     tree = ET.ElementTree(root)

@@ -28,6 +28,8 @@ import PyInstaller.__main__
 import os
 import platform
 
+from core.version import __version__, APP_NAME as VERSION_APP_NAME
+
 # === 设置参数 ===
 ENTRY_FILE = 'main.py'  # 入口文件名
 APP_NAME = 'DanmuTools'     # 生成的可执行文件名
@@ -36,6 +38,47 @@ RESOURCE_PATH = 'ui/res'  # 需要打包进去的静态资源目录
 
 # === Windows使用 ; 分隔，其他使用 : 分隔 ===
 sep = ';' if platform.system() == 'Windows' else ':'
+
+# === 生成 Windows 版本信息资源（右键 exe -> 属性 -> 详细信息） ===
+def write_version_file():
+    parts = [int(p) for p in __version__.split('.')]
+    nums = tuple((parts + [0, 0, 0, 0])[:4])
+    os.makedirs('build', exist_ok=True)
+    path = os.path.join('build', 'version_info.txt')
+    content = f"""VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers={nums},
+    prodvers={nums},
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable('040904B0', [
+        StringStruct('CompanyName', 'Hamlin-Xu'),
+        StringStruct('FileDescription', 'DanmuTools 弹幕下载工具'),
+        StringStruct('FileVersion', '{__version__}'),
+        StringStruct('InternalName', '{APP_NAME}'),
+        StringStruct('LegalCopyright', '仅供学习研究使用'),
+        StringStruct('OriginalFilename', '{APP_NAME}.exe'),
+        StringStruct('ProductName', 'DanmuTools'),
+        StringStruct('ProductVersion', '{__version__}')
+      ])
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+"""
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(content)
+    return path
+
+
+VERSION_FILE = write_version_file()
 
 # 不需要打包的三方库，减少体积
 excluded_modules = [
@@ -65,6 +108,7 @@ PyInstaller.__main__.run([
     '--windowed',  # 不弹出控制台
     '-n', APP_NAME,
     '-i', ICON_PATH,
+    '--version-file', VERSION_FILE,
     '--add-data=ui/res;ui/res',  # 加载资源文件夹
     ENTRY_FILE,
     *exclude_args
